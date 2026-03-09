@@ -17,12 +17,24 @@ ZIP_NAME = "output.zip"
 
 def extraer_urls_desde_excel(excel_file) -> List[str]:
     """Extrae URLs válidas desde cualquier columna del Excel."""
+    filename = (getattr(excel_file, "name", "") or "").lower()
+
     try:
-        df = pd.read_excel(excel_file)
+        if filename.endswith(".xls"):
+            df = pd.read_excel(excel_file, engine="xlrd")
+        else:
+            df = pd.read_excel(excel_file, engine="openpyxl")
     except ImportError as exc:
+        dependencia = "xlrd" if filename.endswith(".xls") else "openpyxl"
+        extension = ".xls" if filename.endswith(".xls") else ".xlsx"
         raise RuntimeError(
-            "No se encontró la dependencia opcional 'openpyxl', necesaria para leer archivos Excel (.xlsx). "
-            "Instálala en el entorno con: pip install openpyxl"
+            f"No se encontró la dependencia opcional '{dependencia}', necesaria para leer archivos Excel ({extension}). "
+            f"Instálala en el entorno con: pip install {dependencia}"
+        ) from exc
+    except ValueError as exc:
+        raise RuntimeError(
+            "No fue posible leer el Excel. Verifica que el archivo tenga un formato válido "
+            "(.xlsx con openpyxl o .xls con xlrd)."
         ) from exc
 
     urls: List[str] = []
@@ -169,7 +181,12 @@ def main():
         st.info("Esperando archivo Excel.")
         return
 
-    urls = extraer_urls_desde_excel(excel_file)
+    try:
+        urls = extraer_urls_desde_excel(excel_file)
+    except RuntimeError as exc:
+        st.error(str(exc))
+        return
+
     if not urls:
         st.error("No se detectaron URLs válidas en el archivo.")
         return
