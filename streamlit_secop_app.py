@@ -204,7 +204,36 @@ def _extraer_urls_desde_valores(values: Iterable[object]) -> List[str]:
     return unique_urls
 
 
-def guardar_paginas_como_pdf(urls: List[str], progreso_placeholder) -> List[Path]:
+def _esperar_resolucion_captcha(page, timeout_s: int) -> bool:
+    """Espera a que desaparezca/sea resuelto el reCAPTCHA cuando está presente."""
+    inicio = time.time()
+
+    while time.time() - inicio < timeout_s:
+        recaptcha_iframes = page.locator(
+            "iframe[src*='recaptcha'], iframe[title*='reCAPTCHA']"
+        ).count()
+
+        if recaptcha_iframes == 0:
+            return True
+
+        token_locator = page.locator("textarea[name='g-recaptcha-response']")
+        if token_locator.count() > 0:
+            token = (token_locator.first.text_content() or "").strip()
+            if token:
+                return True
+
+        page.wait_for_timeout(1000)
+
+    return False
+
+
+def guardar_paginas_como_pdf(
+    urls: List[str],
+    progreso_placeholder,
+    espera_captcha_s: int,
+    modo_manual_captcha: bool,
+    max_espera_resolucion_s: int,
+) -> List[Path]:
     """
     Recorre cada URL y guarda un PDF.
     Nota: los captcha sofisticados pueden requerir resolución manual.
@@ -224,7 +253,7 @@ def guardar_paginas_como_pdf(urls: List[str], progreso_placeholder) -> List[Path
 
     with sync_playwright() as p:
         try:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=not modo_manual_captcha)
         except Exception as exc:
             if _es_error_dependencia_sistema_playwright(exc):
                 raise RuntimeError(_mensaje_dependencias_sistema_playwright(exc)) from exc
@@ -237,7 +266,7 @@ def guardar_paginas_como_pdf(urls: List[str], progreso_placeholder) -> List[Path
             )
             _instalar_chromium_playwright()
             try:
-                browser = p.chromium.launch(headless=True)
+                browser = p.chromium.launch(headless=not modo_manual_captcha)
             except Exception as launch_exc:
                 if _es_error_dependencia_sistema_playwright(launch_exc):
                     raise RuntimeError(
@@ -253,14 +282,20 @@ def guardar_paginas_como_pdf(urls: List[str], progreso_placeholder) -> List[Path
             page.goto(url, wait_until="domcontentloaded", timeout=120000)
 
             # Espera adicional para carga dinámica y posible captcha.
-            # Si hay captcha, el usuario puede resolverlo en la ventana abierta.
-            tiempo_espera = st.session_state.get("espera_captcha", 30)
             try:
                 page.wait_for_load_state("networkidle", timeout=15000)
             except PlaywrightTimeoutError:
                 pass
 
-            page.wait_for_timeout(tiempo_espera * 1000)
+            if modo_manual_captcha:
+                page.bring_to_front()
+                progreso_placeholder.warning(
+                    "Si aparece el reCAPTCHA, resuélvelo en la ventana del navegador que se abrió. "
+                    f"Esperando hasta {max_espera_resolucion_s}s..."
+                )
+                _esperar_resolucion_captcha(page, max_espera_resolucion_s)
+
+            page.wait_for_timeout(espera_captcha_s * 1000)
 
             pdf_name = f"secop_{idx:03d}.pdf"
             pdf_path = OUTPUT_DIR / pdf_name
@@ -321,10 +356,28 @@ def main():
 
     st.session_state.setdefault("espera_captcha", 30)
     st.session_state["espera_captcha"] = st.slider(
-        "Segundos de espera por URL (útil para resolver captcha/manual)",
+        "Segundos de espera extra por URL",
         min_value=5,
         max_value=120,
         value=st.session_state["espera_captcha"],
+    )
+
+    modo_manual_captcha = st.checkbox(
+        "Pausar para resolver reCAPTCHA manualmente antes de guardar el PDF",
+        value=True,
+        help=(
+            "Desactiva el modo headless y deja abierta la ventana del navegador para que puedas "
+            "hacer click en 'No soy un robot' cuando aparezca."
+        ),
+    )
+
+    max_espera_resolucion_s = st.slider(
+        "Tiempo máximo de espera para resolver reCAPTCHA (segundos)",
+        min_value=30,
+        max_value=300,
+        value=120,
+        step=10,
+        disabled=not modo_manual_captcha,
     )
 
     excel_file = st.file_uploader(
@@ -363,7 +416,13 @@ def main():
         inicio = time.time()
 
         try:
-            pdf_paths = guardar_paginas_como_pdf(urls, progreso)
+            pdf_paths = guardar_paginas_como_pdf(
+                urls=urls,
+                progreso_placeholder=progreso,
+                espera_captcha_s=st.session_state["espera_captcha"],
+                modo_manual_captcha=modo_manual_captcha,
+                max_espera_resolucion_s=max_espera_resolucion_s,
+            )
         except RuntimeError as exc:
             st.error(str(exc))
             return
