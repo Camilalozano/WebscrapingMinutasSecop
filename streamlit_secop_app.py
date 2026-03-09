@@ -4,6 +4,7 @@ import io
 import re
 import time
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import List
 
@@ -15,45 +16,113 @@ OUTPUT_DIR = Path("output")
 ZIP_NAME = "output.zip"
 
 
-def extraer_urls_desde_excel(excel_file) -> List[str]:
-    """Extrae URLs válidas desde cualquier columna del Excel."""
-    try:
-        df = pd.read_excel(excel_file)
-    except ImportError as exc:
-        raise RuntimeError(
-            "No se encontró la dependencia opcional 'openpyxl', necesaria para leer archivos Excel (.xlsx). "
-            "Instálala en el entorno con: pip install openpyxl"
-        ) from exc
+def _extraer_textos_desde_xlsx(uploaded_file) -> List[str]:
+    """Extrae textos de celdas desde un .xlsx usando solo librerías estándar."""
+    uploaded_file.seek(0)
+    xlsx_bytes = uploaded_file.read()
+    uploaded_file.seek(0)
 
+    textos: List[str] = []
+
+    with zipfile.ZipFile(io.BytesIO(xlsx_bytes)) as zf:
+        shared_strings: List[str] = []
+        if "xl/sharedStrings.xml" in zf.namelist():
+            root = ET.fromstring(zf.read("xl/sharedStrings.xml"))
+            for si in root.findall(".//{*}si"):
+                parts = [node.text or "" for node in si.findall(".//{*}t")]
+                shared_strings.append("".join(parts))
+
+        sheet_names = sorted(
+            name for name in zf.namelist() if name.startswith("xl/worksheets/sheet")
+        )
+
+        for sheet_name in sheet_names:
+            sheet_root = ET.fromstring(zf.read(sheet_name))
+            for cell in sheet_root.findall(".//{*}c"):
+                cell_type = cell.attrib.get("t")
+                value_node = cell.find("{*}v")
+
+                if cell_type == "s" and value_node is not None and value_node.text:
+                    idx = int(value_node.text)
+                    if 0 <= idx < len(shared_strings):
+                        textos.append(shared_strings[idx])
+                    continue
+
+                if cell_type == "inlineStr":
+                    inline_texts = [node.text or "" for node in cell.findall(".//{*}t")]
+                    if inline_texts:
+                        textos.append("".join(inline_texts))
+                    continue
+
+                if value_node is not None and value_node.text:
+                    textos.append(value_node.text)
+
+    return textos
+
+
+def _extraer_urls_desde_textos(textos: List[str]) -> List[str]:
     urls: List[str] = []
 
-    for _, row in df.iterrows():
-        for value in row.tolist():
-            if pd.isna(value):
-                continue
+    for raw_text in textos:
+        text = str(raw_text).strip()
+        if not text:
+            continue
 
-            text = str(value).strip()
-            if not text:
-                continue
+        # Caso 1: celda con diccionario serializado, ej: {'url': 'https://...'}
+        if text.startswith("{") and "url" in text:
+            try:
+                data = ast.literal_eval(text)
+                if isinstance(data, dict) and data.get("url"):
+                    urls.append(str(data["url"]).strip())
+                    continue
+            except (ValueError, SyntaxError):
+                pass
 
-            # Caso 1: celda con diccionario serializado, ej: {'url': 'https://...'}
-            if text.startswith("{") and "url" in text:
-                try:
-                    data = ast.literal_eval(text)
-                    if isinstance(data, dict) and data.get("url"):
-                        urls.append(str(data["url"]).strip())
-                        continue
-                except (ValueError, SyntaxError):
-                    pass
+        # Caso 2: URL directa o incrustada en texto
+        match = re.search(r"https?://[^\s'\"}]+", text)
+        if match:
+            urls.append(match.group(0))
 
-            # Caso 2: URL directa o incrustada en texto
-            match = re.search(r"https?://[^\s'\"}]+", text)
-            if match:
-                urls.append(match.group(0))
+    return list(dict.fromkeys(urls))
 
-    # Eliminar duplicados preservando orden
-    unique_urls = list(dict.fromkeys(urls))
-    return unique_urls
+
+def extraer_urls_desde_excel(excel_file) -> List[str]:
+    """Extrae URLs válidas desde cualquier columna del Excel."""
+    filename = (getattr(excel_file, "name", "") or "").lower()
+
+    try:
+        if filename.endswith(".xls"):
+            df = pd.read_excel(excel_file, engine="xlrd")
+        else:
+            df = pd.read_excel(excel_file, engine="openpyxl")
+
+        textos = [
+            str(value)
+            for row in df.itertuples(index=False)
+            for value in row
+            if not pd.isna(value)
+        ]
+        return _extraer_urls_desde_textos(textos)
+    except ImportError as exc:
+        if filename.endswith(".xls"):
+            raise RuntimeError(
+                "No se encontró la dependencia opcional 'xlrd', necesaria para leer archivos Excel (.xls). "
+                "Instálala en el entorno con: pip install xlrd"
+            ) from exc
+
+        # Fallback para .xlsx cuando openpyxl no está disponible en el entorno.
+        try:
+            textos = _extraer_textos_desde_xlsx(excel_file)
+            return _extraer_urls_desde_textos(textos)
+        except (ValueError, zipfile.BadZipFile, ET.ParseError) as fallback_exc:
+            raise RuntimeError(
+                "No fue posible leer el Excel .xlsx. El archivo puede estar corrupto o tener un formato no compatible."
+            ) from fallback_exc
+    except ValueError as exc:
+        raise RuntimeError(
+            "No fue posible leer el Excel. Verifica que el archivo tenga un formato válido "
+            "(.xlsx o .xls)."
+        ) from exc
 
 
 def guardar_paginas_como_pdf(urls: List[str], progreso_placeholder) -> List[Path]:
@@ -149,7 +218,8 @@ def main():
     except ModuleNotFoundError:
         st.warning(
             "Falta la librería `openpyxl` en este entorno para leer archivos `.xlsx`. "
-            "Instálala con: `pip install openpyxl`."
+            "Se usará un lector alterno básico para extraer URLs en `.xlsx`, "
+            "pero se recomienda instalarla con: `pip install openpyxl`."
         )
 
     st.session_state.setdefault("espera_captcha", 30)
@@ -169,7 +239,12 @@ def main():
         st.info("Esperando archivo Excel.")
         return
 
-    urls = extraer_urls_desde_excel(excel_file)
+    try:
+        urls = extraer_urls_desde_excel(excel_file)
+    except RuntimeError as exc:
+        st.error(str(exc))
+        return
+
     if not urls:
         st.error("No se detectaron URLs válidas en el archivo.")
         return
