@@ -4,6 +4,8 @@ import importlib
 import importlib.util
 import io
 import re
+import subprocess
+import sys
 import time
 import zipfile
 import xml.etree.ElementTree as ET
@@ -28,6 +30,23 @@ def _playwright_disponible() -> bool:
 
 def _openpyxl_disponible() -> bool:
     return importlib.util.find_spec("openpyxl") is not None
+
+
+def _instalar_chromium_playwright() -> None:
+    """Instala el binario de Chromium usado por Playwright si no existe."""
+    install_cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+
+    try:
+        subprocess.run(install_cmd, check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        stderr = (exc.stderr or "").strip()
+        stdout = (exc.stdout or "").strip()
+        detalle = stderr or stdout or str(exc)
+        raise RuntimeError(
+            "Playwright está instalado, pero faltan los navegadores. "
+            "Intenté instalar Chromium automáticamente y falló. "
+            f"Detalle: {detalle}"
+        ) from exc
 
 
 def extraer_urls_desde_excel(excel_file) -> List[str]:
@@ -173,7 +192,18 @@ def guardar_paginas_como_pdf(urls: List[str], progreso_placeholder) -> List[Path
     sync_playwright = playwright_sync_api.sync_playwright
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        try:
+            browser = p.chromium.launch(headless=True)
+        except Exception as exc:
+            if "Executable doesn't exist" not in str(exc):
+                raise
+
+            progreso_placeholder.info(
+                "Playwright no encontró Chromium. Instalando navegador automáticamente..."
+            )
+            _instalar_chromium_playwright()
+            browser = p.chromium.launch(headless=True)
+
         context = browser.new_context()
 
         for idx, url in enumerate(urls, start=1):
