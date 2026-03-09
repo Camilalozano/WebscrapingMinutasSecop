@@ -19,6 +19,10 @@ ZIP_NAME = "output.zip"
 
 
 def _playwright_disponible() -> bool:
+    playwright_spec = importlib.util.find_spec("playwright")
+    if playwright_spec is None:
+        return False
+
     return importlib.util.find_spec("playwright.sync_api") is not None
 
 
