@@ -4,8 +4,9 @@ import io
 import re
 import time
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import List
+from typing import Iterable, List
 
 import pandas as pd
 import streamlit as st
@@ -24,44 +25,115 @@ def extraer_urls_desde_excel(excel_file) -> List[str]:
             df = pd.read_excel(excel_file, engine="xlrd")
         else:
             df = pd.read_excel(excel_file, engine="openpyxl")
+        values = [value for _, row in df.iterrows() for value in row.tolist()]
     except ImportError as exc:
-        dependencia = "xlrd" if filename.endswith(".xls") else "openpyxl"
-        extension = ".xls" if filename.endswith(".xls") else ".xlsx"
-        raise RuntimeError(
-            f"No se encontró la dependencia opcional '{dependencia}', necesaria para leer archivos Excel ({extension}). "
-            f"Instálala en el entorno con: pip install {dependencia}"
-        ) from exc
+        if filename.endswith(".xlsx"):
+            values = _leer_xlsx_sin_openpyxl(excel_file)
+        else:
+            dependencia = "xlrd"
+            extension = ".xls"
+            raise RuntimeError(
+                f"No se encontró la dependencia opcional '{dependencia}', necesaria para leer archivos Excel ({extension}). "
+                f"Instálala en el entorno con: pip install {dependencia}"
+            ) from exc
     except ValueError as exc:
         raise RuntimeError(
             "No fue posible leer el Excel. Verifica que el archivo tenga un formato válido "
             "(.xlsx con openpyxl o .xls con xlrd)."
         ) from exc
 
+    return _extraer_urls_desde_valores(values)
+
+
+def _leer_xlsx_sin_openpyxl(excel_file) -> List[str]:
+    """Fallback para leer texto de `.xlsx` usando solo librerías estándar."""
+    if hasattr(excel_file, "getvalue"):
+        raw_bytes = excel_file.getvalue()
+    else:
+        raw_bytes = excel_file.read()
+
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw_bytes), "r") as xlsx_zip:
+            shared_strings = _leer_shared_strings(xlsx_zip)
+            values: List[str] = []
+
+            for sheet_name in sorted(
+                name
+                for name in xlsx_zip.namelist()
+                if name.startswith("xl/worksheets/") and name.endswith(".xml")
+            ):
+                with xlsx_zip.open(sheet_name) as sheet_file:
+                    tree = ET.parse(sheet_file)
+                    root = tree.getroot()
+
+                    for cell in root.findall(".//{*}c"):
+                        cell_type = cell.attrib.get("t")
+
+                        if cell_type == "inlineStr":
+                            inline_text = "".join(cell.itertext()).strip()
+                            if inline_text:
+                                values.append(inline_text)
+                            continue
+
+                        value_node = cell.find("{*}v")
+                        if value_node is None or value_node.text is None:
+                            continue
+
+                        cell_value = value_node.text.strip()
+                        if not cell_value:
+                            continue
+
+                        if cell_type == "s":
+                            if cell_value.isdigit():
+                                index = int(cell_value)
+                                if 0 <= index < len(shared_strings):
+                                    values.append(shared_strings[index])
+                        else:
+                            values.append(cell_value)
+
+            return values
+    except (zipfile.BadZipFile, ET.ParseError, KeyError, OSError) as exc:
+        raise RuntimeError(
+            "No fue posible leer el archivo `.xlsx` sin `openpyxl`. "
+            "Instala `openpyxl` con: pip install openpyxl"
+        ) from exc
+
+
+def _leer_shared_strings(xlsx_zip: zipfile.ZipFile) -> List[str]:
+    try:
+        with xlsx_zip.open("xl/sharedStrings.xml") as shared:
+            tree = ET.parse(shared)
+            root = tree.getroot()
+            return ["".join(node.itertext()).strip() for node in root.findall(".//{*}si")]
+    except KeyError:
+        return []
+
+
+def _extraer_urls_desde_valores(values: Iterable[object]) -> List[str]:
     urls: List[str] = []
 
-    for _, row in df.iterrows():
-        for value in row.tolist():
-            if pd.isna(value):
-                continue
+    for value in values:
+        if pd.isna(value):
+            continue
 
-            text = str(value).strip()
-            if not text:
-                continue
+        text = str(value).strip()
+        if not text:
+            continue
 
-            # Caso 1: celda con diccionario serializado, ej: {'url': 'https://...'}
-            if text.startswith("{") and "url" in text:
-                try:
-                    data = ast.literal_eval(text)
-                    if isinstance(data, dict) and data.get("url"):
-                        urls.append(str(data["url"]).strip())
-                        continue
-                except (ValueError, SyntaxError):
-                    pass
+        # Caso 1: celda con diccionario serializado, ej: {'url': 'https://...'}
+        if text.startswith("{") and "url" in text:
+            try:
+                data = ast.literal_eval(text)
+                if isinstance(data, dict) and data.get("url"):
+                    urls.append(str(data["url"]).strip())
+                    continue
+            except (ValueError, SyntaxError):
+                pass
 
-            # Caso 2: URL directa o incrustada en texto
-            match = re.search(r"https?://[^\s'\"}]+", text)
-            if match:
-                urls.append(match.group(0))
+        # Caso 2: URL directa o incrustada en texto
+        match = re.search(r"https?://[^\s'\"}]+", text)
+        if match:
+            urls.append(match.group(0))
 
     # Eliminar duplicados preservando orden
     unique_urls = list(dict.fromkeys(urls))
