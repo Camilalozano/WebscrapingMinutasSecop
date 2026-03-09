@@ -62,7 +62,9 @@ def _es_error_dependencia_sistema_playwright(exc: Exception) -> bool:
     marcadores = [
         "error while loading shared libraries",
         "cannot open shared object file",
+        "failed to launch browser process",
         "libgbm.so",
+        "libglib-2.0.so",
     ]
     return any(marker in error_text for marker in marcadores)
 
@@ -70,9 +72,10 @@ def _es_error_dependencia_sistema_playwright(exc: Exception) -> bool:
 def _mensaje_dependencias_sistema_playwright(exc: Exception) -> str:
     return (
         "Playwright logró descargar Chromium, pero faltan dependencias nativas del sistema "
-        "(por ejemplo `libgbm.so.1`). Ejecuta en el servidor: "
+        "(por ejemplo `libgbm.so.1` o `libglib-2.0.so.0`). Ejecuta en el servidor: "
         "`python -m playwright install --with-deps chromium` "
-        "o instala las librerías faltantes vía apt/yum según tu sistema. "
+        "o instala las librerías faltantes vía apt/yum según tu sistema "
+        "(en Streamlit Cloud, usa `packages.txt`). "
         f"Detalle original: {exc}"
     )
 
