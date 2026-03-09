@@ -17,7 +17,14 @@ ZIP_NAME = "output.zip"
 
 def extraer_urls_desde_excel(excel_file) -> List[str]:
     """Extrae URLs válidas desde cualquier columna del Excel."""
-    df = pd.read_excel(excel_file)
+    try:
+        df = pd.read_excel(excel_file)
+    except ImportError as exc:
+        raise RuntimeError(
+            "No se encontró la dependencia opcional 'openpyxl', necesaria para leer archivos Excel (.xlsx). "
+            "Instálala en el entorno con: pip install openpyxl"
+        ) from exc
+
     urls: List[str] = []
 
     for _, row in df.iterrows():
@@ -135,6 +142,14 @@ def main():
             "Falta la librería `playwright` en este entorno. "
             "Para habilitar el procesamiento instala: "
             "`pip install playwright && playwright install chromium`."
+        )
+
+    try:
+        import openpyxl  # noqa: F401
+    except ModuleNotFoundError:
+        st.warning(
+            "Falta la librería `openpyxl` en este entorno para leer archivos `.xlsx`. "
+            "Instálala con: `pip install openpyxl`."
         )
 
     st.session_state.setdefault("espera_captcha", 30)
