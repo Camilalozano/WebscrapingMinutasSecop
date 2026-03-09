@@ -158,7 +158,7 @@ def guardar_paginas_como_pdf(urls: List[str], progreso_placeholder) -> List[Path
         ) from exc
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        browser = p.chromium.launch(headless=True)
         context = browser.new_context()
 
         for idx, url in enumerate(urls, start=1):
@@ -272,8 +272,11 @@ def main():
 
         try:
             pdf_paths = guardar_paginas_como_pdf(urls, progreso)
-        except Exception as e:
-            st.exception(e)
+        except RuntimeError as exc:
+            st.error(str(exc))
+            return
+        except Exception as exc:
+            st.error(f"Error inesperado al generar PDFs: {exc}")
             return
 
         zip_bytes = crear_zip(pdf_paths)
