@@ -158,7 +158,7 @@ def guardar_paginas_como_pdf(urls: List[str], progreso_placeholder) -> List[Path
         ) from exc
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
+        browser = p.chromium.launch(headless=True)
         context = browser.new_context()
 
         for idx, url in enumerate(urls, start=1):
@@ -219,13 +219,27 @@ def main():
         "Carga tu Excel con URLs, procesa cada enlace y descarga un ZIP con los PDFs generados."
     )
 
+    playwright_ok = True
     try:
-        import playwright  # noqa: F401
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as p:
+            # Validación temprana para evitar traceback al procesar.
+            # Falla aquí si Chromium no está instalado en el entorno.
+            browser = p.chromium.launch(headless=True)
+            browser.close()
     except ModuleNotFoundError:
+        playwright_ok = False
         st.warning(
             "Falta la librería `playwright` en este entorno. "
             "Para habilitar el procesamiento instala: "
             "`pip install playwright && playwright install chromium`."
+        )
+    except Exception:
+        playwright_ok = False
+        st.warning(
+            "`playwright` está instalado, pero Chromium no está disponible. "
+            "Ejecuta: `playwright install chromium`."
         )
 
     try:
@@ -266,14 +280,19 @@ def main():
     st.success(f"Se detectaron {len(urls)} URL(s).")
     st.dataframe(pd.DataFrame({"url": urls}), use_container_width=True)
 
-    if st.button("Procesar URLs y generar PDFs", type="primary"):
+    if st.button(
+        "Procesar URLs y generar PDFs", type="primary", disabled=not playwright_ok
+    ):
         progreso = st.empty()
         inicio = time.time()
 
         try:
             pdf_paths = guardar_paginas_como_pdf(urls, progreso)
-        except Exception as e:
-            st.exception(e)
+        except RuntimeError as exc:
+            st.error(str(exc))
+            return
+        except Exception as exc:
+            st.error(f"Error inesperado al generar PDFs: {exc}")
             return
 
         zip_bytes = crear_zip(pdf_paths)
