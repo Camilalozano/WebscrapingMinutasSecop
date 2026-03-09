@@ -219,35 +219,21 @@ def main():
         "Carga tu Excel con URLs, procesa cada enlace y descarga un ZIP con los PDFs generados."
     )
 
-    playwright_ok = True
     try:
-        from playwright.sync_api import sync_playwright
-
-        with sync_playwright() as p:
-            # Validación temprana para evitar traceback al procesar.
-            # Falla aquí si Chromium no está instalado en el entorno.
-            browser = p.chromium.launch(headless=True)
-            browser.close()
+        import playwright.sync_api  # noqa: F401
     except ModuleNotFoundError:
-        playwright_ok = False
         st.warning(
             "Falta la librería `playwright` en este entorno. "
             "Para habilitar el procesamiento instala: "
             "`pip install playwright && playwright install chromium`."
         )
-    except Exception:
-        playwright_ok = False
-        st.warning(
-            "`playwright` está instalado, pero Chromium no está disponible. "
-            "Ejecuta: `playwright install chromium`."
-        )
 
     try:
         import openpyxl  # noqa: F401
     except ModuleNotFoundError:
-        st.warning(
-            "Falta la librería `openpyxl` en este entorno para leer archivos `.xlsx`. "
-            "Instálala con: `pip install openpyxl`."
+        st.info(
+            "No se encontró `openpyxl`. Se usará un lector `.xlsx` alternativo; "
+            "si encuentras limitaciones instala `openpyxl` con: `pip install openpyxl`."
         )
 
     st.session_state.setdefault("espera_captcha", 30)
@@ -280,9 +266,7 @@ def main():
     st.success(f"Se detectaron {len(urls)} URL(s).")
     st.dataframe(pd.DataFrame({"url": urls}), use_container_width=True)
 
-    if st.button(
-        "Procesar URLs y generar PDFs", type="primary", disabled=not playwright_ok
-    ):
+    if st.button("Procesar URLs y generar PDFs", type="primary"):
         progreso = st.empty()
         inicio = time.time()
 
