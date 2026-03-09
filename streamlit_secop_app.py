@@ -9,8 +9,6 @@ from typing import List
 
 import pandas as pd
 import streamlit as st
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-from playwright.sync_api import sync_playwright
 
 
 OUTPUT_DIR = Path("output")
@@ -58,6 +56,15 @@ def guardar_paginas_como_pdf(urls: List[str], progreso_placeholder) -> List[Path
     """
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     pdf_paths: List[Path] = []
+
+    try:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+        from playwright.sync_api import sync_playwright
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "No se encontró la dependencia opcional 'playwright'. "
+            "Instálala en el entorno con: pip install playwright && playwright install chromium"
+        ) from exc
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
@@ -120,6 +127,15 @@ def main():
     st.write(
         "Carga tu Excel con URLs, procesa cada enlace y descarga un ZIP con los PDFs generados."
     )
+
+    try:
+        import playwright  # noqa: F401
+    except ModuleNotFoundError:
+        st.warning(
+            "Falta la librería `playwright` en este entorno. "
+            "Para habilitar el procesamiento instala: "
+            "`pip install playwright && playwright install chromium`."
+        )
 
     st.session_state.setdefault("espera_captcha", 30)
     st.session_state["espera_captcha"] = st.slider(
