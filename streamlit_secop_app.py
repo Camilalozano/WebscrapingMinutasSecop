@@ -1,5 +1,6 @@
 import ast
 import base64
+import os
 import importlib
 import importlib.util
 import io
@@ -78,6 +79,11 @@ def _mensaje_dependencias_sistema_playwright(exc: Exception) -> str:
         "(en Streamlit Cloud, usa `packages.txt`). "
         f"Detalle original: {exc}"
     )
+
+
+def _entorno_tiene_pantalla() -> bool:
+    """Indica si el entorno tiene servidor gráfico disponible (X11/Wayland)."""
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 
 
 def extraer_urls_desde_excel(excel_file) -> List[str]:
@@ -251,28 +257,50 @@ def guardar_paginas_como_pdf(
     PlaywrightTimeoutError = playwright_sync_api.TimeoutError
     sync_playwright = playwright_sync_api.sync_playwright
 
+    headless = not modo_manual_captcha
+    if modo_manual_captcha and not _entorno_tiene_pantalla():
+        progreso_placeholder.warning(
+            "El modo manual de reCAPTCHA requiere interfaz gráfica, pero este servidor no "
+            "tiene DISPLAY/WAYLAND. Se usará modo headless automáticamente."
+        )
+        headless = True
+
     with sync_playwright() as p:
         try:
-            browser = p.chromium.launch(headless=not modo_manual_captcha)
+            browser = p.chromium.launch(headless=headless)
         except Exception as exc:
             if _es_error_dependencia_sistema_playwright(exc):
                 raise RuntimeError(_mensaje_dependencias_sistema_playwright(exc)) from exc
 
-            if "Executable doesn't exist" not in str(exc):
-                raise
+            if not headless and "xserver" in str(exc).lower():
+                progreso_placeholder.warning(
+                    "No fue posible abrir Chromium con interfaz gráfica (XServer). "
+                    "Reintentando en modo headless..."
+                )
+                browser = p.chromium.launch(headless=True)
+            else:
+                if "Executable doesn't exist" not in str(exc):
+                    raise
 
-            progreso_placeholder.info(
-                "Playwright no encontró Chromium. Instalando navegador automáticamente..."
-            )
-            _instalar_chromium_playwright()
-            try:
-                browser = p.chromium.launch(headless=not modo_manual_captcha)
-            except Exception as launch_exc:
-                if _es_error_dependencia_sistema_playwright(launch_exc):
-                    raise RuntimeError(
-                        _mensaje_dependencias_sistema_playwright(launch_exc)
-                    ) from launch_exc
-                raise
+                progreso_placeholder.info(
+                    "Playwright no encontró Chromium. Instalando navegador automáticamente..."
+                )
+                _instalar_chromium_playwright()
+                try:
+                    browser = p.chromium.launch(headless=headless)
+                except Exception as launch_exc:
+                    if _es_error_dependencia_sistema_playwright(launch_exc):
+                        raise RuntimeError(
+                            _mensaje_dependencias_sistema_playwright(launch_exc)
+                        ) from launch_exc
+                    if not headless and "xserver" in str(launch_exc).lower():
+                        progreso_placeholder.warning(
+                            "Chromium no pudo iniciarse en modo visual tras la instalación. "
+                            "Reintentando en modo headless..."
+                        )
+                        browser = p.chromium.launch(headless=True)
+                    else:
+                        raise
 
         context = browser.new_context()
 
@@ -362,14 +390,22 @@ def main():
         value=st.session_state["espera_captcha"],
     )
 
+    entorno_con_pantalla = _entorno_tiene_pantalla()
+
     modo_manual_captcha = st.checkbox(
         "Pausar para resolver reCAPTCHA manualmente antes de guardar el PDF",
-        value=True,
+        value=entorno_con_pantalla,
         help=(
             "Desactiva el modo headless y deja abierta la ventana del navegador para que puedas "
             "hacer click en 'No soy un robot' cuando aparezca."
         ),
     )
+
+    if modo_manual_captcha and not entorno_con_pantalla:
+        st.warning(
+            "Este entorno no tiene interfaz gráfica (DISPLAY/WAYLAND), por lo que el "
+            "modo manual se ejecutará en headless automáticamente."
+        )
 
     max_espera_resolucion_s = st.slider(
         "Tiempo máximo de espera para resolver reCAPTCHA (segundos)",
