@@ -34,19 +34,47 @@ def _openpyxl_disponible() -> bool:
 
 def _instalar_chromium_playwright() -> None:
     """Instala el binario de Chromium usado por Playwright si no existe."""
-    install_cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+    install_cmds = [
+        [sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"],
+        [sys.executable, "-m", "playwright", "install", "chromium"],
+    ]
 
-    try:
-        subprocess.run(install_cmd, check=True, capture_output=True, text=True)
-    except subprocess.CalledProcessError as exc:
-        stderr = (exc.stderr or "").strip()
-        stdout = (exc.stdout or "").strip()
-        detalle = stderr or stdout or str(exc)
-        raise RuntimeError(
-            "Playwright está instalado, pero faltan los navegadores. "
-            "Intenté instalar Chromium automáticamente y falló. "
-            f"Detalle: {detalle}"
-        ) from exc
+    errores = []
+    for install_cmd in install_cmds:
+        try:
+            subprocess.run(install_cmd, check=True, capture_output=True, text=True)
+            return
+        except subprocess.CalledProcessError as exc:
+            stderr = (exc.stderr or "").strip()
+            stdout = (exc.stdout or "").strip()
+            errores.append(stderr or stdout or str(exc))
+
+    detalle = " | ".join(errores)
+    raise RuntimeError(
+        "Playwright está instalado, pero faltan los navegadores/dependencias del sistema. "
+        "Intenté instalar Chromium automáticamente y falló. "
+        f"Detalle: {detalle}"
+    )
+
+
+def _es_error_dependencia_sistema_playwright(exc: Exception) -> bool:
+    error_text = str(exc).lower()
+    marcadores = [
+        "error while loading shared libraries",
+        "cannot open shared object file",
+        "libgbm.so",
+    ]
+    return any(marker in error_text for marker in marcadores)
+
+
+def _mensaje_dependencias_sistema_playwright(exc: Exception) -> str:
+    return (
+        "Playwright logró descargar Chromium, pero faltan dependencias nativas del sistema "
+        "(por ejemplo `libgbm.so.1`). Ejecuta en el servidor: "
+        "`python -m playwright install --with-deps chromium` "
+        "o instala las librerías faltantes vía apt/yum según tu sistema. "
+        f"Detalle original: {exc}"
+    )
 
 
 def extraer_urls_desde_excel(excel_file) -> List[str]:
@@ -195,6 +223,9 @@ def guardar_paginas_como_pdf(urls: List[str], progreso_placeholder) -> List[Path
         try:
             browser = p.chromium.launch(headless=True)
         except Exception as exc:
+            if _es_error_dependencia_sistema_playwright(exc):
+                raise RuntimeError(_mensaje_dependencias_sistema_playwright(exc)) from exc
+
             if "Executable doesn't exist" not in str(exc):
                 raise
 
@@ -202,7 +233,14 @@ def guardar_paginas_como_pdf(urls: List[str], progreso_placeholder) -> List[Path
                 "Playwright no encontró Chromium. Instalando navegador automáticamente..."
             )
             _instalar_chromium_playwright()
-            browser = p.chromium.launch(headless=True)
+            try:
+                browser = p.chromium.launch(headless=True)
+            except Exception as launch_exc:
+                if _es_error_dependencia_sistema_playwright(launch_exc):
+                    raise RuntimeError(
+                        _mensaje_dependencias_sistema_playwright(launch_exc)
+                    ) from launch_exc
+                raise
 
         context = browser.new_context()
 
