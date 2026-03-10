@@ -224,7 +224,14 @@ def _esperar_resolucion_captcha(page, timeout_s: int) -> bool:
 
         token_locator = page.locator("textarea[name='g-recaptcha-response']")
         if token_locator.count() > 0:
-            token = (token_locator.first.text_content() or "").strip()
+            try:
+                token = (token_locator.first.input_value() or "").strip()
+            except Exception:
+                token = (
+                    token_locator.first.evaluate("el => (el && el.value) ? el.value : ''")
+                    or ""
+                ).strip()
+
             if token:
                 return True
 
@@ -321,7 +328,15 @@ def guardar_paginas_como_pdf(
                     "Si aparece el reCAPTCHA, resuélvelo en la ventana del navegador que se abrió. "
                     f"Esperando hasta {max_espera_resolucion_s}s..."
                 )
-                _esperar_resolucion_captcha(page, max_espera_resolucion_s)
+                captcha_resuelto = _esperar_resolucion_captcha(
+                    page, max_espera_resolucion_s
+                )
+                if not captcha_resuelto:
+                    progreso_placeholder.warning(
+                        "No se detectó la resolución del reCAPTCHA en el tiempo configurado. "
+                        "El PDF podría guardarse solo con la pantalla del captcha. "
+                        "Aumenta el tiempo de espera o vuelve a intentar resolviéndolo antes."
+                    )
 
             page.wait_for_timeout(espera_captcha_s * 1000)
 
