@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib
 import re
 import time
 from dataclasses import dataclass, asdict
@@ -27,8 +28,6 @@ from typing import Iterable, List, Optional
 from urllib.parse import urljoin, urlparse
 
 import pandas as pd
-from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
-from playwright.sync_api import sync_playwright
 
 
 ALLOWED_EXTENSIONS = {
@@ -48,6 +47,21 @@ NON_DOCUMENT_CONTENT_TYPES = {
     "text/html",
     "application/xhtml+xml",
 }
+
+
+def _load_playwright_sync_api():
+    """Carga playwright.sync_api en tiempo de ejecución.
+
+    Evita errores de análisis estático cuando Playwright no está instalado
+    en el entorno del editor y permite mostrar un mensaje claro en runtime.
+    """
+    try:
+        return importlib.import_module("playwright.sync_api")
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "No se encontró 'playwright'. Instálalo con 'pip install playwright' "
+            "y luego ejecuta 'playwright install chromium'."
+        ) from exc
 
 
 @dataclass
@@ -212,12 +226,13 @@ def process_url(
     target_dir: Path,
     manual_captcha: bool,
     max_wait_captcha_s: int,
+    timeout_error_cls,
 ) -> DownloadResult:
     try:
         page.goto(source_url, wait_until="domcontentloaded", timeout=120_000)
         try:
             page.wait_for_load_state("networkidle", timeout=20_000)
-        except PlaywrightTimeoutError:
+        except timeout_error_cls:
             pass
 
         if detect_captcha(page):
@@ -271,7 +286,9 @@ def run_pipeline(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     results: List[DownloadResult] = []
-    with sync_playwright() as p:
+    playwright_sync_api = _load_playwright_sync_api()
+
+    with playwright_sync_api.sync_playwright() as p:
         browser = p.chromium.launch(headless=not headed)
         context = browser.new_context(accept_downloads=True)
         page = context.new_page()
@@ -285,6 +302,7 @@ def run_pipeline(
                 target_dir=output_dir,
                 manual_captcha=manual_captcha,
                 max_wait_captcha_s=max_wait_captcha_s,
+                timeout_error_cls=playwright_sync_api.TimeoutError,
             )
             print(f"    -> {result.status}: {result.detail}")
             results.append(result)
