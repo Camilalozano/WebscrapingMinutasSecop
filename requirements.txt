@@ -3,3 +3,6 @@ pandas
 openpyxl
 xlrd
 playwright
+
+openai
+pypdf
